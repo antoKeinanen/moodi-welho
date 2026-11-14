@@ -330,19 +330,32 @@ async def start_time_button(cb: CallbackQuery, db: Database) -> None:
 @router.callback_query(F.data == "b:drop")
 async def drop_ask(cb: CallbackQuery, db: Database) -> None:
     who(db, cb)
-    await show(
-        cb,
-        "Hylätäänkö keskeneräinen sauva? Sen tölkit poistetaan.",
-        v.confirm_kb("b:drop:y", "b:view", "Hylkää"),
+    text = (
+        "Mitä yritykselle tehdään?\n\n"
+        "Epäonnistunut yritys jää tilastoihin mutta ei näy galleriassa. "
+        "Poistettu yritys häviää kokonaan."
     )
+    markup = v.kb(
+        [v.b("Epäonnistui", "b:drop:f")],
+        [v.b("Poista kokonaan", "b:drop:d")],
+        [v.b("↩️ Takaisin", "b:view")],
+    )
+    await show(cb, text, markup)
 
 
-@router.callback_query(F.data == "b:drop:y")
+@router.callback_query(F.data.in_({"b:drop:f", "b:drop:d"}))
 async def drop_do(cb: CallbackQuery, db: Database) -> None:
     uid = who(db, cb)
-    if s := db.active_staff(uid):
+    s = db.active_staff(uid)
+    if s is None:
+        return await alert(cb, "Sauva ei ole kesken.")
+    if cb.data == "b:drop:f" and db.fail_staff(s.id, uid):
+        text = "Yritys kirjattiin epäonnistuneeksi ja se näkyy tilastoissa."
+    else:
         db.discard_staff(s.id, uid)
-    await start(cb, db)
+        text = "Yritys poistettiin."
+    db.set_state(uid, None)
+    await show(cb, text, menu_for(db, uid))
 
 
 # --- finished staff --------------------------------------------------------------------
@@ -407,7 +420,7 @@ async def on_text(message: Message, db: Database) -> None:
 async def my(event: Event, db: Database) -> None:
     uid = who(db, event)
     db.set_state(uid, None)
-    done = db.finished_for_users([uid])
+    done = db.attempts_for_users([uid])
     height = db.get_height(uid)
     text = (
         v.stats_text(compute_stats(done), "Omat tilastot") + f"\n\nOma pituus: {fmt_height(height)}"
@@ -415,10 +428,11 @@ async def my(event: Event, db: Database) -> None:
     rows = [
         [
             v.b(
-                f"{fmt_date(s.finished_at)} · {len(s.cans)} tölkkiä {s.stone_emoji or ''}",
+                f"{fmt_date(s.finished_at or s.failed_at)} · {v.cans_text(len(s.cans))} "  # type: ignore[arg-type]
+                + ("epäonnistui" if s.failed else s.stone_emoji or ""),
                 f"v:0:{s.id}",
             )
-        ]  # type: ignore[arg-type]
+        ]
         for s in db.own_staffs(uid, 8)
     ]
     rows.append([v.b("Oma pituus", "my:height"), v.b("Poista tietoni", "my:wipe")])
@@ -459,7 +473,7 @@ async def wipe_do(cb: CallbackQuery, db: Database) -> None:
 async def own_view(event: Event, db: Database, staff_id: int) -> None:
     uid = who(db, event)
     s = db.get_staff(staff_id)
-    if s is None or s.user_id != uid or not s.done:
+    if s is None or s.user_id != uid or not (s.done or s.failed):
         return await show(event, "Sauvaa ei löytynyt.", v.kb([v.b("↩️ Omat", "m:my")]))
     kb = v.kb(
         [v.b("🗑 Poista", f"d:{s.id}"), v.b("↩️ Omat sauvat", "m:my")],
@@ -568,7 +582,7 @@ async def stats_entry(event: Event, db: Database) -> None:
     uid = who(db, event)
     if chat_of(event) != uid:
         return await show_group_stats(event, db, chat_of(event))
-    text = v.stats_text(compute_stats(db.finished_for_users([uid])), "Omat tilastot")
+    text = v.stats_text(compute_stats(db.attempts_for_users([uid])), "Omat tilastot")
     rows = [[v.b(f"👥 {title}", f"s:g:{chat_id}")] for chat_id, title in db.user_groups(uid)]
     await show(event, text, v.kb(*rows, [v.MENU_BTN]))
 
@@ -577,7 +591,7 @@ async def show_group_stats(event: Event, db: Database, chat_id: int) -> None:
     uid = who(db, event)
     if not may_see_group(db, event, uid, chat_id):
         return await show(event, "Liity ensin komennolla /join ryhmässä.", v.kb([v.MENU_BTN]))
-    staffs = db.group_staffs(chat_id)  # opted-in members only
+    staffs = db.group_staffs(chat_id)  # attempts of opted-in members only
     text = v.stats_text(
         compute_stats(staffs), f"Tilastot, {db.group_title(chat_id)}", leaderboard(staffs)
     )

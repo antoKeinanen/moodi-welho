@@ -33,6 +33,7 @@ HELP = (
     "1. Aloita sauva komennolla /new yksityisviestissä.\n"
     "2. Lisää tölkit napeilla. Tölkki 0,33 l on yksi emoji ja 0,5 l kaksi.\n"
     "3. Lopuksi valitse voimakivi tai jätä se pois.\n\n"
+    "Jos sauva kaatuu kesken kaiken, merkitse yritys epäonnistuneeksi. Se jää tilastoihin.\n\n"
     "Ryhmässä komento /join lisää sinut ryhmän tilastoihin ja galleriaan, ja /leave poistaa sinut. "
     "Sauvasi näkyvät ryhmässä vain, jos olet liittynyt.\n\n"
     "Komennot: /new, /my, /gallery, /stats, /help"
@@ -69,8 +70,12 @@ def confirm_kb(yes: str, no: str, label: str) -> Markup:
 # --- builder ---------------------------------------------------------------------------
 
 
+def cans_text(n: int) -> str:
+    return "1 tölkki" if n == 1 else f"{n} tölkkiä"
+
+
 def counts_line(s: Staff) -> str:
-    return f"{len(s.cans)} tölkkiä ({s.count(33)} × 0,33 l, {s.count(50)} × 0,5 l)"
+    return f"{cans_text(len(s.cans))} ({s.count(33)} × 0,33 l, {s.count(50)} × 0,5 l)"
 
 
 def height_line(s: Staff, goal_cm: int | None = None) -> str:
@@ -99,7 +104,7 @@ def builder_kb(s: Staff) -> Markup:
             rows += grid(tags, 3)  # optional: what was the last can?
         rows.append([b("↩️ Kumoa viimeisin", f"b:undo:{last.id}"), b("✏️ Muokkaa", "b:edit")])
     rows.append([b("⏱ Alkuaika", "b:start")] + ([b("🏁 Valmis", "b:finish")] if s.cans else []))
-    rows.append([b("🗑 Hylkää", "b:drop"), MENU_BTN])
+    rows.append([b("💥 Epäonnistui", "b:drop"), MENU_BTN])
     return kb(*rows)
 
 
@@ -198,7 +203,7 @@ def card(s: Staff, max_chars: int) -> str:
     return (
         f"<b>{escape(s.user_name)}</b>, {fmt_date(s.finished_at or s.started_at)}, "
         f"kesto {fmt_duration(s.duration)}\n"
-        f"{len(s.cans)} tölkkiä, pituus noin {fmt_height(s.height_cm)}\n{stack}"
+        f"{cans_text(len(s.cans))}, pituus noin {fmt_height(s.height_cm)}\n{stack}"
     )
 
 
@@ -219,8 +224,10 @@ def gallery_kb(staffs: list[Staff], chat_id: int, offset: int, total: int) -> Ma
 
 
 def full_view_text(s: Staff, viewer_height: int | None = None) -> str:
+    when = fmt_date(s.finished_at or s.failed_at or s.started_at)
+    label = ", epäonnistunut yritys" if s.failed else ""
     return (
-        f"<b>{escape(s.user_name)}</b>, {fmt_date(s.finished_at or s.started_at)}\n\n"
+        f"<b>{escape(s.user_name)}</b>, {when}{label}\n\n"
         f"{render_stack(s.cans, s.stone_emoji, ground=True)}\n\n{staff_details(s, viewer_height)}"
     )
 
@@ -228,14 +235,30 @@ def full_view_text(s: Staff, viewer_height: int | None = None) -> str:
 # --- statistics ------------------------------------------------------------------------
 
 
-def stats_text(st: Stats, title: str, board: list[tuple[str, int]] | None = None) -> str:
+def _board_lines(board: list[tuple[str, int, int]] | None) -> list[str]:
+    if not board:
+        return []
+    lines = ["", "<b>Tuloslista</b>"]
+    for i, (name, degrees, failed) in enumerate(board, 1):
+        line = f"{i}. {escape(name)}, {degrees} tutkinto" + ("a" if degrees != 1 else "")
+        if failed:
+            line += f", {failed} epäonnistunut" + ("ta" if failed != 1 else "")
+        lines.append(line)
+    return lines
+
+
+def stats_text(st: Stats, title: str, board: list[tuple[str, int, int]] | None = None) -> str:
     head = f"<b>{escape(title)}</b>\n\n"
-    if not st.degrees:
+    if not st.degrees and not st.failed:
         return head + "Valmiita sauvoja ei ole vielä."
-    lines = [
-        f"Valmiita tutkintoja: {st.degrees}",
-        f"Tölkkejä yhteensä: {st.cans} ({st.cans_33} × 0,33 l, {st.cans_50} × 0,5 l)",
-    ]
+    lines = [f"Valmiita tutkintoja: {st.degrees}"]
+    if st.failed:
+        lines.append(f"Epäonnistuneita yrityksiä: {st.failed} ({cans_text(st.failed_cans)})")
+        if st.success_rate is not None:
+            lines.append(f"Onnistumisprosentti: {round(st.success_rate * 100)} %")
+    if not st.degrees:
+        return head + "\n".join(lines + _board_lines(board))
+    lines.append(f"Tölkkejä yhteensä: {st.cans} ({st.cans_33} × 0,33 l, {st.cans_50} × 0,5 l)")
     if st.share_33 is not None:
         share = round(st.share_33 * 100)
         lines.append(f"Tölkkien osuudet: 0,33 l {share} %, 0,5 l {100 - share} %")
@@ -249,7 +272,4 @@ def stats_text(st: Stats, title: str, board: list[tuple[str, int]] | None = None
     if st.stones:
         sizes = ", ".join(f"{STONE_SIZES[k]} {v}" for k, v in sorted(st.stone_sizes.items()))
         lines.append(f"Voimakiviä: {st.stones}" + (f" ({sizes})" if sizes else ""))
-    if board:
-        lines += ["", "<b>Tuloslista</b>"]
-        lines += [f"{i}. {escape(n)}, {c} tutkintoa" for i, (n, c) in enumerate(board, 1)]
-    return head + "\n".join(lines)
+    return head + "\n".join(lines + _board_lines(board))

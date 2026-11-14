@@ -88,7 +88,7 @@ def test_gallery_card_shows_whole_staff_when_it_fits():
 
     cans = [Can(i, 50, "🍺") for i in range(20)] + [Can(99, 33, "🍎")]
     t = datetime(2026, 1, 1, tzinfo=UTC)
-    staffs = [Staff(i, i, f"U{i}", t, t, "💎", None, cans) for i in range(3)]
+    staffs = [Staff(i, i, f"U{i}", t, finished_at=t, stone_emoji="💎", cans=cans) for i in range(3)]
     text = gallery_text(staffs, "Ryhmä", 3, 0)
     assert text.count("🍺") == 40 * 3 and "alempaa" not in text
     assert utf16_len(text) < 4096

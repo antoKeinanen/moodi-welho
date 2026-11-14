@@ -35,9 +35,9 @@ Botti reagoi ryhmässä vain komentoihin, joten se ei tarvitse ylimääräisiä 
 | --- | --- |
 | `/start` | Päävalikko |
 | `/new` | Aloittaa sauvan tai jatkaa keskeneräistä (yksityisviestissä) |
-| `/my` | Omat sauvat ja tilastot, oma pituus, tietojen poisto |
+| `/my` | Omat sauvat (myös epäonnistuneet) ja tilastot, oma pituus, tietojen poisto |
 | `/gallery` | Ryhmän valmiit sauvat, kolme sivulla, kokonaan näkyvinä |
-| `/stats` | Ryhmässä ryhmän tilastot ja tuloslista, yksityisviestissä omat tilastot |
+| `/stats` | Ryhmässä ryhmän tilastot ja tuloslista (myös jokaisen epäonnistumiset), yksityisviestissä omat tilastot |
 | `/join`, `/leave` | Liittyy ryhmän tilastoihin ja galleriaan tai poistuu niistä. Jäsenyys on ryhmäkohtainen |
 | `/help` | Ohje |
 
@@ -51,6 +51,9 @@ Botti reagoi ryhmässä vain komentoihin, joten se ei tarvitse ylimääräisiä 
 4. Nappi "Valmis" avaa valinnan sauvan huipusta. Huipulle kelpaa mikä tahansa emoji, ja sen voi
    jättää pois. Loppuaika tallentuu samalla.
 5. Voimakiven koon voi kertoa jälkeenpäin.
+6. Jos sauva kaatuu, nappi "Epäonnistui" kirjaa yrityksen epäonnistuneeksi. Yritys jää tilastoihin
+   mutta ei näy galleriassa, vaikka siinä ei olisi vielä tölkkejä. Vain nappi "Poista kokonaan"
+   poistaa yrityksen, esimerkiksi vahingossa aloitetun.
 
 Sauvan pituus arvioidaan tölkeistä: 0,33 l on 11,5 cm ja 0,5 l on 16 cm. Jos tallennat oman
 pituutesi komennolla `/my`, rakennusnäkymä näyttää, kuinka lähellä tavoitetta olet.
@@ -70,8 +73,9 @@ tests/         piirto, järjestys, tilastot, yksityisyys ja käsittelijöiden ku
 
 Tietokannassa on taulut `users`, `groups`, `memberships` (ryhmä ja käyttäjä), `staffs` ja `cans`.
 Rivi `cans`-taulussa on yksi fyysinen tölkki, jolla on koko (33 tai 50 cl), emoji, valinnainen
-juomalaji ja paikka sauvassa. Tilastot lasketaan näistä riveistä vain valmiille sauvoille, joten
-0,5 l:n tölkki lasketaan yhdeksi tölkiksi, vaikka se piirtyy kahtena emojina. Uusi migraatio
+juomalaji ja paikka sauvassa. Tutkintotilastot lasketaan näistä riveistä vain valmiille sauvoille. Epäonnistuneista yrityksistä
+tilastoidaan lukumäärä, tölkit ja onnistumisprosentti. Tilastot laskevat tölkit riveistä eivätkä
+emojeista, joten 0,5 l:n tölkki on yksi tölkki, vaikka se piirtyy kahtena emojina. Uusi migraatio
 lisätään merkkijonona `db.MIGRATIONS`-listaan.
 
 ## Yksityisyys
@@ -92,3 +96,23 @@ lisätään merkkijonona `db.MIGRATIONS`-listaan.
   siksi lisää eikä poista kahta tölkkiä.
 - Viestin pituusraja on 4096 merkkiä Telegramin UTF-16-laskennalla. Liian pitkä sauva leikataan
   alhaalta, joten voimakivi pysyy näkyvissä.
+
+## Docker
+
+GitHub Actions rakentaa Docker-kuvan pull requesteissa. Push `main`-haaraan, `v*`-tagi tai
+käsin käynnistetty työnkulku julkaisee kuvan GitHub Container Registryyn:
+`ghcr.io/antokeinanen/moodi-welho`. `main` päivittää `latest`-tagin, versiotagi tuottaa
+samannimisen kuvatagin ja jokainen julkaisu saa myös `sha-<koko commit-tunnus>`-tagin.
+Julkaisu käyttää automaattista `GITHUB_TOKEN`-tunnusta; erillisiä salasanoja ei tarvita.
+Yksityisen kuvan lataaminen vaatii kirjautumisen GHCR:ään.
+
+```bash
+docker run -d --name velho --restart unless-stopped \
+  --env-file .env -e DB_PATH=/data/velho.db \
+  -v velho-data:/data ghcr.io/antokeinanen/moodi-welho:latest
+```
+
+Tietokanta säilyy `velho-data`-volyymissa. `.env` annetaan vain ajon aikana;
+kuvaan ei kopioida paikallisia salaisuuksia tai tietokantoja. Kuva käyttää
+lukittuja tuotantoriippuvuuksia ja ajaa botin tavallisena käyttäjänä.
+Paikallinen rakennus: `docker build -t velho .`.

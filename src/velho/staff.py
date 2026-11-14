@@ -48,6 +48,7 @@ class Staff:
     user_name: str
     started_at: datetime
     finished_at: datetime | None = None
+    failed_at: datetime | None = None  # attempt given up; kept for statistics
     stone_emoji: str | None = None
     stone_size: str | None = None
     cans: list[Can] = field(default_factory=list)  # bottom → top, in the order added
@@ -57,8 +58,13 @@ class Staff:
         return self.finished_at is not None
 
     @property
+    def failed(self) -> bool:
+        return self.failed_at is not None
+
+    @property
     def duration(self) -> timedelta | None:
-        return self.finished_at - self.started_at if self.finished_at else None
+        end = self.finished_at or self.failed_at
+        return end - self.started_at if end else None
 
     @property
     def height_cm(self) -> float:

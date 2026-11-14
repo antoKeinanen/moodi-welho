@@ -49,6 +49,13 @@ MIGRATIONS = [
     """,
     # staff height is now estimated from the cans instead of stored
     "ALTER TABLE staffs DROP COLUMN height_cm;",
+    # failed attempts are kept (failed_at set) instead of deleted
+    """
+    ALTER TABLE staffs ADD COLUMN failed_at TEXT;
+    DROP INDEX one_active_staff;
+    CREATE UNIQUE INDEX one_active_staff ON staffs(user_id)
+        WHERE finished_at IS NULL AND failed_at IS NULL;
+    """,
 ]
 
 
@@ -161,6 +168,7 @@ class Database:
                 user_name=r["user_name"],
                 started_at=datetime.fromisoformat(r["started_at"]),
                 finished_at=datetime.fromisoformat(r["finished_at"]) if r["finished_at"] else None,
+                failed_at=datetime.fromisoformat(r["failed_at"]) if r["failed_at"] else None,
                 stone_emoji=r["stone_emoji"],
                 stone_size=r["stone_size"],
             )
@@ -181,7 +189,9 @@ class Database:
         return found[0] if found else None
 
     def active_staff(self, user_id: int) -> Staff | None:
-        found = self._load("s.user_id = ? AND s.finished_at IS NULL", (user_id,))
+        found = self._load(
+            "s.user_id = ? AND s.finished_at IS NULL AND s.failed_at IS NULL", (user_id,)
+        )
         return found[0] if found else None
 
     def start_staff(self, user_id: int, now: datetime | None = None) -> Staff:
@@ -198,9 +208,25 @@ class Database:
     def discard_staff(self, staff_id: int, user_id: int) -> None:
         self._run("DELETE FROM staffs WHERE id = ? AND user_id = ?", staff_id, user_id)
 
+    def fail_staff(self, staff_id: int, user_id: int, now: datetime | None = None) -> bool:
+        """Mark the attempt as failed so it counts in statistics, even if it has no cans yet.
+
+        False if the staff is not an unfinished attempt of this user.
+        """
+        return (
+            self._run(
+                "UPDATE staffs SET failed_at = ? WHERE id = ? AND user_id = ? "
+                "AND finished_at IS NULL AND failed_at IS NULL",
+                (now or utcnow()).isoformat(),
+                staff_id,
+                user_id,
+            ).rowcount
+            > 0
+        )
+
     def set_started(self, staff_id: int, when: datetime) -> None:
         self._run(
-            "UPDATE staffs SET started_at = ? WHERE id = ? AND finished_at IS NULL",
+            "UPDATE staffs SET started_at = ? WHERE id = ? AND finished_at IS NULL AND failed_at IS NULL",
             when.isoformat(),
             staff_id,
         )
@@ -210,7 +236,7 @@ class Database:
         return (
             self._run(
                 "UPDATE staffs SET finished_at = ?, stone_emoji = ? "
-                "WHERE id = ? AND finished_at IS NULL "
+                "WHERE id = ? AND finished_at IS NULL AND failed_at IS NULL "
                 "AND EXISTS (SELECT 1 FROM cans WHERE staff_id = ?)",
                 (now or utcnow()).isoformat(),
                 stone,
@@ -240,7 +266,7 @@ class Database:
         """(user_id, staff_id) of an *unfinished* staff's can, else None."""
         row = self.conn.execute(
             "SELECT s.user_id, s.id FROM cans c JOIN staffs s ON s.id = c.staff_id "
-            "WHERE c.id = ? AND s.finished_at IS NULL",
+            "WHERE c.id = ? AND s.finished_at IS NULL AND s.failed_at IS NULL",
             (can_id,),
         ).fetchone()
         return (row["user_id"], row["id"]) if row else None
@@ -279,26 +305,30 @@ class Database:
 
     # --- finished staffs, always scoped by who consented ---
 
+    _ENDED = "(s.finished_at IS NOT NULL OR s.failed_at IS NOT NULL)"
+
     def own_staffs(self, user_id: int, limit: int = 10) -> list[Staff]:
+        """Finished and failed attempts, newest first."""
         return self._load(
-            "s.user_id = ? AND s.finished_at IS NOT NULL",
+            f"s.user_id = ? AND {self._ENDED}",
             (user_id,),
-            f"ORDER BY s.finished_at DESC, s.id DESC LIMIT {int(limit)}",
+            f"ORDER BY COALESCE(s.finished_at, s.failed_at) DESC, s.id DESC LIMIT {int(limit)}",
         )
 
-    def finished_for_users(self, user_ids: list[int]) -> list[Staff]:
+    def attempts_for_users(self, user_ids: list[int]) -> list[Staff]:
+        """Finished and failed attempts, for statistics."""
         if not user_ids:
             return []
         marks = ",".join("?" * len(user_ids))
-        return self._load(f"s.finished_at IS NOT NULL AND s.user_id IN ({marks})", tuple(user_ids))
+        return self._load(f"{self._ENDED} AND s.user_id IN ({marks})", tuple(user_ids))
 
     def group_members(self, chat_id: int) -> list[int]:
         rows = self.conn.execute("SELECT user_id FROM memberships WHERE chat_id = ?", (chat_id,))
         return [r["user_id"] for r in rows]
 
     def group_staffs(self, chat_id: int) -> list[Staff]:
-        """All finished staffs of the group's opted-in members."""
-        return self.finished_for_users(self.group_members(chat_id))
+        """All finished and failed attempts of the group's opted-in members."""
+        return self.attempts_for_users(self.group_members(chat_id))
 
     _IN_GROUP = (
         "s.finished_at IS NOT NULL AND s.user_id IN "

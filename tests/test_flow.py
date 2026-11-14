@@ -144,3 +144,27 @@ async def test_wipe_deletes_everything(db: Database, sent):
     await add_can(db, 33, "🍎")
     await h.wipe_do(cb("my:wipe:y"), db)
     assert db.conn.execute("SELECT COUNT(*) FROM cans").fetchone()[0] == 0
+
+
+async def test_failed_attempt_flow(db: Database, sent):
+    await h.builder(cb("b:view"), db)
+    await add_can(db, 33, "🍎")
+    await add_can(db, 50, "🍺")
+    await h.drop_do(cb("b:drop:f"), db)
+    assert db.active_staff(1) is None
+    attempt = db.own_staffs(1)[0]
+    assert attempt.failed and len(attempt.cans) == 2
+
+    await h.my(cb("m:my"), db)
+    assert "Epäonnistuneita yrityksiä: 1 (2 tölkkiä)" in sent[-1][0]
+    assert "Onnistumisprosentti: 0 %" in sent[-1][0]
+
+    # failing right after /new keeps the attempt too
+    await h.builder(cb("b:view"), db)
+    await h.drop_do(cb("b:drop:f"), db)
+    assert [a.failed for a in db.own_staffs(1)] == [True, True]
+
+    # only "Poista kokonaan" deletes, and it leaves the statistics untouched
+    await h.builder(cb("b:view"), db)
+    await h.drop_do(cb("b:drop:d"), db)
+    assert len(db.own_staffs(1)) == 2 and db.active_staff(1) is None
